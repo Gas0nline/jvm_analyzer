@@ -1,0 +1,815 @@
+d<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JVM Snapshot Viewer</title>
+<style>
+  :root {
+    --bg: #14171c;
+    --panel: #1b1f26;
+    --panel-alt: #20252d;
+    --border: #2a2f38;
+    --text: #e7e9ec;
+    --text-muted: #8892a0;
+    --text-dim: #5c6472;
+    --accent-amber: #e8823a;
+    --accent-amber-dim: #6b4a2c;
+    --accent-blue: #5b8dd9;
+    --accent-blue-dim: #2f3f57;
+    --accent-red: #e5484d;
+    --accent-red-dim: #4a2529;
+    --accent-green: #4caf7d;
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --radius: 6px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* ---------- layout ---------- */
+
+  .app { display: flex; min-height: 100vh; }
+
+  .rail {
+    width: 210px;
+    flex-shrink: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 20px 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+
+  .rail-brand {
+    padding: 0 20px 18px 20px;
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: 0.2px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  .rail-brand span { color: var(--accent-amber); }
+
+  .rail-nav button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-family: var(--font-ui);
+    font-size: 13.5px;
+    padding: 9px 20px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+  }
+  .rail-nav button:hover { color: var(--text); background: var(--panel-alt); }
+  .rail-nav button.active {
+    color: var(--text);
+    border-left-color: var(--accent-amber);
+    background: var(--panel-alt);
+  }
+  .rail-nav .count-badge {
+    float: right;
+    background: var(--accent-red-dim);
+    color: #ffb4b6;
+    border-radius: 10px;
+    padding: 0 7px;
+    font-size: 11px;
+    line-height: 16px;
+  }
+
+  .main { flex: 1; min-width: 0; }
+
+  .topbar {
+    height: 58px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
+
+  .topbar-meta { display: flex; gap: 22px; align-items: baseline; }
+  .topbar-meta .item { display: flex; flex-direction: column; gap: 1px; }
+  .topbar-meta .label { font-size: 10.5px; color: var(--text-dim); }
+  .topbar-meta .value { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
+
+  .load-btn, .btn {
+    background: var(--accent-amber);
+    color: #1a1206;
+    border: none;
+    padding: 9px 16px;
+    border-radius: var(--radius);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn.secondary {
+    background: var(--panel-alt);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-weight: 500;
+  }
+
+  .content { padding: 26px 30px 60px 30px; max-width: 1180px; }
+
+  .section { display: none; }
+  .section.active { display: block; }
+
+  h1 { font-size: 19px; font-weight: 600; margin: 0 0 4px 0; }
+  h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px 0; color: var(--text); }
+  .section-intro { color: var(--text-muted); font-size: 13px; margin: 0 0 22px 0; }
+
+  /* ---------- empty state ---------- */
+
+  .empty-state {
+    margin-top: 12vh;
+    max-width: 520px;
+    text-align: left;
+  }
+  .empty-state h1 { font-size: 22px; margin-bottom: 10px; }
+  .empty-state p { color: var(--text-muted); margin-bottom: 22px; }
+  .empty-state code {
+    font-family: var(--font-mono);
+    background: var(--panel-alt);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12.5px;
+    color: var(--accent-amber);
+  }
+
+  /* ---------- panels & grid ---------- */
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    margin-bottom: 20px;
+  }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .stat-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .stat-card .stat-label { font-size: 11.5px; color: var(--text-dim); margin-bottom: 6px; }
+  .stat-card .stat-value { font-family: var(--font-mono); font-size: 21px; font-weight: 600; }
+  .stat-card .stat-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; }
+
+  .alert {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    background: var(--accent-red-dim);
+    border: 1px solid #7a3438;
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    margin-bottom: 20px;
+  }
+  .alert .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-red); margin-top: 5px; flex-shrink: 0; }
+  .alert strong { display: block; margin-bottom: 3px; color: #ffb4b6; }
+  .alert pre { margin: 8px 0 0 0; white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; color: #f0c4c5; }
+
+  .alert.ok { background: #17301f; border-color: #2c5138; }
+  .alert.ok .dot { background: var(--accent-green); }
+  .alert.ok strong { color: #a4e0bc; }
+
+  /* ---------- tables ---------- */
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-dim);
+    font-size: 11.5px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; font-family: var(--font-mono); }
+  td.mono { font-family: var(--font-mono); font-size: 12.5px; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge.RUNNABLE { background: #1d3a2b; color: var(--accent-green); }
+  .badge.WAITING { background: var(--accent-blue-dim); color: #a9c6f2; }
+  .badge.TIMED_WAITING { background: #2a3a57; color: #9fb8e8; }
+  .badge.BLOCKED { background: var(--accent-red-dim); color: #ffb4b6; }
+  .badge.NEW { background: #2c2f38; color: var(--text-muted); }
+  .badge.TERMINATED { background: #2c2f38; color: var(--text-dim); }
+  .badge.UNKNOWN { background: #2c2f38; color: var(--text-dim); }
+
+  /* ---------- charts ---------- */
+
+  .chart-wrap { margin-bottom: 6px; }
+  canvas { max-width: 100%; }
+
+  /* ---------- raw / config blocks ---------- */
+
+  .raw-block {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: #101317;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 420px;
+    overflow-y: auto;
+    color: #c7ccd3;
+  }
+
+  .filter-row { display: flex; gap: 10px; margin-bottom: 14px; }
+  .filter-row input, .filter-row select {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    font-family: var(--font-ui);
+    font-size: 13px;
+  }
+  .filter-row input { flex: 1; }
+
+  .thread-row { cursor: pointer; }
+  .thread-row:hover { background: var(--panel-alt); }
+  .thread-detail {
+    display: none;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: #101317;
+    padding: 12px 14px;
+    white-space: pre-wrap;
+    color: #c7ccd3;
+  }
+  .thread-detail.open { display: block; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<input type="file" id="fileInput" accept="application/json,.json" style="display:none">
+
+<!-- Rempli automatiquement par le pipeline CI (job "package_report").
+     En usage local, reste vide et le sélecteur de fichier prend le relai. -->
+<script type="application/json" id="embeddedSnapshot">__EMBEDDED_SNAPSHOT__</script>
+
+<div class="app">
+  <nav class="rail">
+    <div class="rail-brand">JVM <span>Snapshot</span></div>
+    <div class="rail-nav" id="railNav">
+      <button data-section="overview" class="active">Vue d'ensemble</button>
+      <button data-section="memory">Mémoire &amp; GC</button>
+      <button data-section="classes">Classes chargées</button>
+      <button data-section="threads">Threads <span class="count-badge" id="threadBadge" style="display:none"></span></button>
+      <button data-section="raw">Configuration brute</button>
+    </div>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-meta" id="topbarMeta" style="display:none">
+        <div class="item"><span class="label">PID</span><span class="value" id="metaPid">—</span></div>
+        <div class="item"><span class="label">Hôte</span><span class="value" id="metaHost">—</span></div>
+        <div class="item"><span class="label">Capturé le</span><span class="value" id="metaTime">—</span></div>
+      </div>
+      <div style="flex:1"></div>
+      <button class="load-btn" id="loadBtn">Charger un snapshot JSON</button>
+    </div>
+
+    <div class="content">
+
+      <div id="emptyState" class="empty-state">
+        <h1>Aucun snapshot chargé</h1>
+        <p>Charge un fichier produit par <code>collect.sh &lt;pid&gt;</code> pour visualiser l'état de la JVM : mémoire, GC, classes en mémoire et threads.</p>
+        <button class="btn" id="loadBtnEmpty">Choisir un fichier JSON</button>
+      </div>
+
+      <div id="sections" style="display:none">
+
+        <section class="section active" id="section-overview">
+          <h2>Vue d'ensemble</h2>
+          <p class="section-intro">Résumé de l'instantané pour un premier coup d'œil avant d'aller creuser une section précise.</p>
+          <div id="deadlockBannerOverview"></div>
+          <div class="stat-grid" id="overviewStats"></div>
+          <div class="panel">
+            <h2>Version JVM</h2>
+            <div class="raw-block" id="vmVersionBlock" style="max-height:140px"></div>
+          </div>
+        </section>
+
+        <section class="section" id="section-memory">
+          <h2>Mémoire &amp; GC</h2>
+          <p class="section-intro">Occupation des générations (jstat -gcutil) et compteurs de collections.</p>
+          <div class="panel">
+            <div class="chart-wrap"><canvas id="gcUtilChart" height="220"></canvas></div>
+          </div>
+          <div class="two-col">
+            <div class="panel">
+              <h2>Compteurs GC</h2>
+              <table id="gcCountsTable"><tbody></tbody></table>
+            </div>
+            <div class="panel">
+              <h2>Heap (jcmd GC.heap_info)</h2>
+              <div class="raw-block" id="heapInfoBlock" style="max-height:220px"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="section-classes">
+          <h2>Classes chargées</h2>
+          <p class="section-intro">Les classes les plus consommatrices en mémoire (jcmd GC.class_histogram), triées par octets occupés.</p>
+          <div class="panel">
+            <div class="chart-wrap"><canvas id="histoChart" height="280"></canvas></div>
+          </div>
+          <div class="panel">
+            <table id="histoTable">
+              <thead><tr><th>#</th><th>Classe</th><th class="num">Instances</th><th class="num">Octets</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section" id="section-threads">
+          <h2>Threads</h2>
+          <p class="section-intro">État des threads au moment de la capture (jcmd Thread.print). Clique une ligne pour voir la stack complète.</p>
+          <div id="deadlockBannerThreads"></div>
+          <div class="two-col">
+            <div class="panel">
+              <div class="chart-wrap"><canvas id="threadStateChart" height="200"></canvas></div>
+            </div>
+            <div class="panel">
+              <h2>Résumé</h2>
+              <table id="threadStateTable"><tbody></tbody></table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="filter-row">
+              <input type="text" id="threadFilter" placeholder="Filtrer par nom de thread…">
+              <select id="threadStateFilter">
+                <option value="">Tous les états</option>
+              </select>
+            </div>
+            <table id="threadTable">
+              <thead><tr><th>Nom</th><th>État</th></tr></thead>
+              <tbody id="threadTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section" id="section-raw">
+          <h2>Configuration brute</h2>
+          <p class="section-intro">Flags JVM, propriétés système et capacité du GC — utile en complément des graphes pour du fine tuning.</p>
+          <div class="panel">
+            <h2>VM.flags</h2>
+            <div class="raw-block" id="flagsBlock"></div>
+          </div>
+          <div class="panel">
+            <div class="filter-row">
+              <input type="text" id="propsFilter" placeholder="Filtrer les propriétés système…">
+            </div>
+            <div class="raw-block" id="propsBlock" style="max-height:340px"></div>
+          </div>
+          <div class="panel">
+            <h2>jstat -gccapacity</h2>
+            <div class="raw-block" id="gcCapacityBlock" style="max-height:220px"></div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  let DATA = null;
+  let allProps = "";
+  let allThreads = [];
+
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+  // ---------- navigation ----------
+
+  $$('.rail-nav button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $$('.rail-nav button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      $$('.section').forEach(s => s.classList.remove('active'));
+      $('#section-' + btn.dataset.section).classList.add('active');
+      // Les canvas ont une largeur nulle tant que leur section est display:none,
+      // donc on les redessine une fois la section rendue visible.
+      if (DATA) {
+        if (btn.dataset.section === 'memory') renderMemory(DATA);
+        if (btn.dataset.section === 'classes') renderClasses(DATA);
+        if (btn.dataset.section === 'threads') renderThreads(DATA);
+      }
+    });
+  });
+
+  // ---------- file loading ----------
+
+  const fileInput = $('#fileInput');
+  $('#loadBtn').addEventListener('click', () => fileInput.click());
+  $('#loadBtnEmpty').addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = JSON.parse(evt.target.result);
+        DATA = data;
+        render(data);
+      } catch (err) {
+        alert("Fichier JSON invalide : " + err.message);
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  // ---------- helpers ----------
+
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    const units = ['o', 'Ko', 'Mo', 'Go'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+  }
+
+  function fmtNum(n) {
+    return Number(n || 0).toLocaleString('fr-FR');
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function extractHeapUsage(heapRaw) {
+    // Best-effort : cherche des motifs "used NNNNK" / "total NNNNK" dans le texte brut
+    // (le format varie selon le collecteur GC, donc on reste tolérant)
+    if (!heapRaw) return null;
+    const usedMatch = heapRaw.match(/used\s+(\d+)K/i);
+    const totalMatch = heapRaw.match(/total\s+(\d+)K/i);
+    if (usedMatch && totalMatch) {
+      const used = parseInt(usedMatch[1], 10) * 1024;
+      const total = parseInt(totalMatch[1], 10) * 1024;
+      return { used, total, pct: total ? (used / total * 100) : 0 };
+    }
+    return null;
+  }
+
+  // ---------- canvas bar chart (aucune dépendance externe) ----------
+
+  function drawBarChart(canvas, items, opts) {
+    opts = opts || {};
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.parentElement.clientWidth;
+    const cssHeight = canvas.height;
+    canvas.width = cssWidth * dpr;
+    canvas.height = cssHeight * dpr;
+    canvas.style.width = cssWidth + 'px';
+    canvas.style.height = cssHeight + 'px';
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    if (!items.length) {
+      ctx.fillStyle = '#5c6472';
+      ctx.font = '13px ' + getComputedStyle(document.body).fontFamily;
+      ctx.fillText('Aucune donnée', 10, 20);
+      return;
+    }
+
+    const maxVal = opts.max != null ? opts.max : Math.max(...items.map(i => i.value), 0.0001);
+    const labelW = opts.labelWidth || 90;
+    const barAreaW = cssWidth - labelW - 60;
+    const barH = Math.min(22, (cssHeight - 10) / items.length - 8);
+    const gap = (cssHeight - items.length * barH) / (items.length + 1);
+
+    ctx.font = '11px ' + getComputedStyle(document.body).fontFamily;
+    let y = gap;
+    items.forEach(item => {
+      ctx.fillStyle = '#8892a0';
+      ctx.textAlign = 'right';
+      ctx.fillText(item.label, labelW - 10, y + barH / 2 + 4);
+
+      ctx.fillStyle = '#20252d';
+      ctx.fillRect(labelW, y, barAreaW, barH);
+
+      const w = Math.max(2, (item.value / maxVal) * barAreaW);
+      ctx.fillStyle = item.color || '#e8823a';
+      ctx.fillRect(labelW, y, w, barH);
+
+      ctx.fillStyle = '#e7e9ec';
+      ctx.textAlign = 'left';
+      const valText = opts.valueFormatter ? opts.valueFormatter(item.value) : String(item.value);
+      ctx.fillText(valText, labelW + w + 8, y + barH / 2 + 4);
+
+      y += barH + gap;
+    });
+  }
+
+  // ---------- render ----------
+
+  function render(data) {
+    $('#emptyState').style.display = 'none';
+    $('#sections').style.display = 'block';
+    $('#topbarMeta').style.display = 'flex';
+
+    const meta = data.meta || {};
+    $('#metaPid').textContent = meta.pid != null ? meta.pid : '—';
+    $('#metaHost').textContent = meta.hostname || '—';
+    $('#metaTime').textContent = meta.collected_at || '—';
+
+    renderOverview(data);
+    renderMemory(data);
+    renderClasses(data);
+    renderThreads(data);
+    renderRaw(data);
+  }
+
+  function renderOverview(data) {
+    const dyn = data.dynamic || {};
+    const threads = dyn.threads || {};
+    const states = threads.states || {};
+    const heap = extractHeapUsage(dyn.heap_info_raw);
+    const gcUtil = dyn.gc_util || [];
+    const findMetric = (key) => {
+      const m = gcUtil.find(x => x.metric === key);
+      return m ? m.value : null;
+    };
+
+    const deadlockHost = $('#deadlockBannerOverview');
+    if (threads.deadlock_detected) {
+      deadlockHost.innerHTML = `
+        <div class="alert">
+          <div class="dot"></div>
+          <div>
+            <strong>Deadlock détecté au moment de la capture</strong>
+            Va voir l'onglet Threads pour le détail des threads impliqués.
+          </div>
+        </div>`;
+    } else {
+      deadlockHost.innerHTML = `
+        <div class="alert ok">
+          <div class="dot"></div>
+          <div><strong>Aucun deadlock détecté</strong></div>
+        </div>`;
+    }
+
+    const cards = [];
+    cards.push({ label: 'Threads', value: threads.total != null ? threads.total : '—',
+      sub: `${states.blocked || 0} bloqué(s)` });
+    if (heap) {
+      cards.push({ label: 'Heap utilisé', value: fmtBytes(heap.used), sub: fmtBytes(heap.total) + ' au total' });
+    }
+    const oldGen = findMetric('O');
+    if (oldGen != null) cards.push({ label: 'Old gen', value: oldGen + ' %', sub: 'occupation' });
+    const eden = findMetric('E');
+    if (eden != null) cards.push({ label: 'Eden', value: eden + ' %', sub: 'occupation' });
+    const fgc = findMetric('FGC');
+    if (fgc != null) cards.push({ label: 'Full GC', value: fgc, sub: (findMetric('FGCT') || '0') + ' s cumulées' });
+    const ygc = findMetric('YGC');
+    if (ygc != null) cards.push({ label: 'Young GC', value: ygc, sub: (findMetric('YGCT') || '0') + ' s cumulées' });
+
+    $('#overviewStats').innerHTML = cards.map(c => `
+      <div class="stat-card">
+        <div class="stat-label">${escapeHtml(c.label)}</div>
+        <div class="stat-value">${escapeHtml(c.value)}</div>
+        <div class="stat-sub">${escapeHtml(c.sub || '')}</div>
+      </div>`).join('');
+
+    $('#vmVersionBlock').textContent = (data.static || {}).vm_version || '—';
+  }
+
+  function renderMemory(data) {
+    const dyn = data.dynamic || {};
+    const gcUtil = dyn.gc_util || [];
+
+    const pctKeys = { S0: 'Survivor 0', S1: 'Survivor 1', E: 'Eden', O: 'Old gen', M: 'Metaspace', CCS: 'Compressed class' };
+    const pctItems = gcUtil
+      .filter(m => pctKeys[m.metric])
+      .map(m => ({
+        label: pctKeys[m.metric],
+        value: parseFloat(m.value) || 0,
+        color: (parseFloat(m.value) || 0) > 85 ? '#e5484d' : '#e8823a'
+      }));
+
+    drawBarChart($('#gcUtilChart'), pctItems, {
+      max: 100,
+      labelWidth: 110,
+      valueFormatter: v => v.toFixed(1) + ' %'
+    });
+
+    const countKeys = { YGC: 'Young GC (nb)', YGCT: 'Young GC (s cumulées)', FGC: 'Full GC (nb)', FGCT: 'Full GC (s cumulées)', GCT: 'Total GC (s)' };
+    const rows = gcUtil.filter(m => countKeys[m.metric]).map(m =>
+      `<tr><td>${escapeHtml(countKeys[m.metric])}</td><td class="num mono">${escapeHtml(m.value)}</td></tr>`
+    ).join('');
+    $('#gcCountsTable tbody').innerHTML = rows || '<tr><td colspan="2">Aucune donnée</td></tr>';
+
+    $('#heapInfoBlock').textContent = dyn.heap_info_raw || '—';
+  }
+
+  function renderClasses(data) {
+    const histo = (data.dynamic || {}).class_histogram || [];
+    const top = histo.slice(0, 15);
+    const items = top.map(h => ({
+      label: h.class.length > 34 ? h.class.slice(0, 31) + '…' : h.class,
+      value: Number(h.bytes) || 0,
+      color: '#5b8dd9'
+    }));
+    drawBarChart($('#histoChart'), items, {
+      labelWidth: 200,
+      valueFormatter: v => fmtBytes(v)
+    });
+
+    const rows = histo.map(h => `
+      <tr>
+        <td class="num">${h.rank}</td>
+        <td class="mono">${escapeHtml(h.class)}</td>
+        <td class="num">${fmtNum(h.instances)}</td>
+        <td class="num">${fmtBytes(h.bytes)}</td>
+      </tr>`).join('');
+    $('#histoTable tbody').innerHTML = rows || '<tr><td colspan="4">Aucune donnée</td></tr>';
+  }
+
+  function renderThreads(data) {
+    const threads = (data.dynamic || {}).threads || {};
+    const states = threads.states || {};
+
+    const deadlockHost = $('#deadlockBannerThreads');
+    if (threads.deadlock_detected) {
+      deadlockHost.innerHTML = `
+        <div class="alert">
+          <div class="dot"></div>
+          <div>
+            <strong>Deadlock détecté</strong>
+            <pre>${escapeHtml(threads.deadlock_detail || '')}</pre>
+          </div>
+        </div>`;
+      $('#threadBadge').style.display = 'inline-block';
+      $('#threadBadge').textContent = '!';
+    } else {
+      deadlockHost.innerHTML = '';
+      $('#threadBadge').style.display = 'none';
+    }
+
+    const stateColors = {
+      RUNNABLE: '#4caf7d', WAITING: '#5b8dd9', TIMED_WAITING: '#7fa3e0',
+      BLOCKED: '#e5484d', NEW: '#8892a0', TERMINATED: '#5c6472'
+    };
+    const stateItems = Object.keys(states)
+      .filter(k => states[k] > 0)
+      .map(k => ({
+        label: k.replace('_', ' '),
+        value: states[k],
+        color: stateColors[k.toUpperCase()] || '#8892a0'
+      }));
+    drawBarChart($('#threadStateChart'), stateItems, { labelWidth: 120 });
+
+    $('#threadStateTable tbody').innerHTML = Object.keys(states).map(k => `
+      <tr>
+        <td><span class="badge ${k.toUpperCase()}">${escapeHtml(k.replace('_', ' '))}</span></td>
+        <td class="num mono">${states[k]}</td>
+      </tr>`).join('');
+
+    // Parse individual threads from the raw dump for the filterable table
+    const raw = threads.raw_dump || '';
+    allThreads = raw.split(/\n{2,}/)
+      .filter(block => block.trim().startsWith('"'))
+      .map(block => {
+        const nameMatch = block.match(/^"([^"]*)"/);
+        const stateMatch = block.match(/Thread\.State:\s*(\S+)/);
+        return {
+          name: nameMatch ? nameMatch[1] : '(sans nom)',
+          state: stateMatch ? stateMatch[1] : 'UNKNOWN',
+          raw: block.trim()
+        };
+      });
+
+    const stateFilterSel = $('#threadStateFilter');
+    const uniqueStates = Array.from(new Set(allThreads.map(t => t.state)));
+    stateFilterSel.innerHTML = '<option value="">Tous les états</option>' +
+      uniqueStates.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+
+    renderThreadTable();
+  }
+
+  function renderThreadTable() {
+    const nameFilter = ($('#threadFilter').value || '').toLowerCase();
+    const stateFilter = $('#threadStateFilter').value;
+
+    const filtered = allThreads.filter(t =>
+      (!nameFilter || t.name.toLowerCase().includes(nameFilter)) &&
+      (!stateFilter || t.state === stateFilter)
+    );
+
+    const tbody = $('#threadTableBody');
+    tbody.innerHTML = filtered.map((t, i) => `
+      <tr class="thread-row" data-idx="${i}">
+        <td class="mono">${escapeHtml(t.name)}</td>
+        <td><span class="badge ${t.state.toUpperCase()}">${escapeHtml(t.state.replace('_', ' '))}</span></td>
+      </tr>
+      <tr><td colspan="2" style="padding:0;border:none"><div class="thread-detail" id="detail-${i}"></div></td></tr>
+    `).join('');
+
+    tbody.querySelectorAll('.thread-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const idx = row.dataset.idx;
+        const detail = $('#detail-' + idx);
+        const isOpen = detail.classList.contains('open');
+        tbody.querySelectorAll('.thread-detail.open').forEach(d => d.classList.remove('open'));
+        if (!isOpen) {
+          detail.textContent = filtered[idx].raw;
+          detail.classList.add('open');
+        }
+      });
+    });
+  }
+
+  $('#threadFilter').addEventListener('input', renderThreadTable);
+  $('#threadStateFilter').addEventListener('change', renderThreadTable);
+
+  function renderRaw(data) {
+    const staticData = data.static || {};
+    const dyn = data.dynamic || {};
+    $('#flagsBlock').textContent = staticData.vm_flags || '—';
+    allProps = staticData.system_properties || '';
+    $('#propsBlock').textContent = allProps;
+    $('#gcCapacityBlock').textContent = dyn.gc_capacity_raw || '—';
+  }
+
+  $('#propsFilter').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    if (!q) { $('#propsBlock').textContent = allProps; return; }
+    const filtered = allProps.split('\n').filter(l => l.toLowerCase().includes(q)).join('\n');
+    $('#propsBlock').textContent = filtered || '(aucune correspondance)';
+  });
+
+  window.addEventListener('resize', () => {
+    if (DATA) { renderMemory(DATA); renderClasses(DATA); renderThreads(DATA); }
+  });
+
+  // ---------- auto-chargement si le pipeline CI a embarqué un snapshot ----------
+
+  (function tryAutoLoad() {
+    const el = document.getElementById('embeddedSnapshot');
+    if (!el) return;
+    // Le marqueur est reconstruit par concaténation pour qu'il n'apparaisse
+    // qu'UNE seule fois tel quel dans ce fichier (dans la balise <script> plus
+    // bas) — embed_snapshot.py ne remplace que cette occurrence-là.
+    const PLACEHOLDER = '__EMBEDDED' + '_SNAPSHOT__';
+    const raw = el.textContent.trim();
+    if (!raw || raw === PLACEHOLDER) return; // rien d'embarqué, usage local normal
+    try {
+      const data = JSON.parse(raw);
+      DATA = data;
+      render(data);
+    } catch (err) {
+      console.error('Snapshot embarqué invalide :', err);
+    }
+  })();
+})();
+</script>
+
+</body>
+</html>
